@@ -1,33 +1,13 @@
 #!/bin/sh
-# A firewall script intended to be used on workstations / laptops. It basically
-# blocks all incoming traffic and only allows minimal outgoing traffic.
-# It helps to mitigate certains attacks, misconfigurations of local daemons,
-# misbehaving local users or applications, and can prevent untrusted
-# applications from "phoning home", among other things.
 
-# Note: This is work in progress! Any comments and suggestions are welcome!
-#------------------------------------------------------------------------------
-# Configuration.
-#------------------------------------------------------------------------------
-
-# For debugging use iptables -v.
 IPTABLES="/sbin/iptables"
 IP6TABLES="/sbin/ip6tables"
 MODPROBE="/sbin/modprobe"
 RMMOD="/sbin/rmmod"
 ARP="/usr/sbin/arp"
 
-# Logging options.
-# Note: We use --log-level debug, so that the messages are not output
-# to all virtual consoles (which would be quite annoying).
-# Alternative: Start klogd with -c 4 (e.g. by setting KLOGD="-c 4" in the
-# /etc/init.d/klogd startup-script.
 LOG="LOG --log-level debug --log-tcp-sequence --log-tcp-options"
 LOG="$LOG --log-ip-options"
-
-# Defaults for rate limiting (to prevent DoS attacks and excessive logging).
-# TODO: What is a good value for --limit and --limit-burst?
-# TODO: Test rate limiting.
 RLIMIT="-m limit --limit 3/s --limit-burst 8"
 
 # Unprivileged ports.
@@ -40,103 +20,34 @@ PSSH="1000:1023"
 $MODPROBE ip_conntrack_ftp
 $MODPROBE ip_conntrack_irc
 
-
-#------------------------------------------------------------------------------
-# Mitigate ARP spoofing/poisoning and similar attacks.
-# For details see:
-#   * http://en.wikipedia.org/wiki/ARP_spoofing
-#   * http://www.grc.com/nat/arp.htm
-#------------------------------------------------------------------------------
-
-# Hardcode static ARP cache entries here (e.g. for the network gateway).
+##########################################################
+### allow certain inbound connections
+##########################################################
 # $ARP -s IP-ADDRESS MAC-ADDRESS
 
-
-#------------------------------------------------------------------------------
-# Kernel configuration.
-# For details see:
-#   * http://www.securityfocus.com/infocus/1711
-#   * http://www.linuxgazette.com/issue77/lechnyr.html
-#   * http://ipsysctl-tutorial.frozentux.net/chunkyhtml/index.html
-#   * /usr/src/linux/Documentation/filesystems/proc.txt
-#   * /usr/src/linux/Documentation/networking/ip-sysctl.txt
-#------------------------------------------------------------------------------
-
-# Disable IP forwarding.
-# Note: We turn this on and off to reset all settings to their defaults.
 echo 1 > /proc/sys/net/ipv4/ip_forward
 echo 0 > /proc/sys/net/ipv4/ip_forward
-
-# Enable IP spoofing protection (i.e. source address verification).
-# Note: This is special, as it seems to only be enabled if you set
-# */all/rp_filter AND */eth0/rp_filter (for example) to 1! Setting only
-# */all/rp_filter alone does _not_ suffice, which is pretty counter-intuitive.
 for i in /proc/sys/net/ipv4/conf/*/rp_filter; do echo 1 > $i; done
-
-# Protect against SYN flood attacks (see http://cr.yp.to/syncookies.html).
 echo 1 > /proc/sys/net/ipv4/tcp_syncookies
-
-# Ignore all incoming ICMP echo requests (i.e. disable ping).
-# Usually not a good idea, as some protocols and users need/want this.
-# echo 1 > /proc/sys/net/ipv4/icmp_echo_ignore_all
 echo 0 > /proc/sys/net/ipv4/icmp_echo_ignore_all
-
-# Ignore ICMP echo requests to broadcast/multicast addresses. We do not
-# want to participate in smurf (and similar) DoS attacks.
-# For details see: http://en.wikipedia.org/wiki/Smurf_attack.
 echo 1 > /proc/sys/net/ipv4/icmp_echo_ignore_broadcasts
-
-# Log packets with impossible addresses.
 for i in /proc/sys/net/ipv4/conf/*/log_martians; do echo 1 > $i; done
-
-# Don't log invalid responses to broadcast frames, they just clutter the logs.
 echo 1 > /proc/sys/net/ipv4/icmp_ignore_bogus_error_responses
-
-# Don't accept or send ICMP redirects.
 for i in /proc/sys/net/ipv4/conf/*/accept_redirects; do echo 0 > $i; done
 for i in /proc/sys/net/ipv4/conf/*/send_redirects; do echo 0 > $i; done
-
-# Don't accept source routed packets.
 for i in /proc/sys/net/ipv4/conf/*/accept_source_route; do echo 0 > $i; done
-
-# Disable multicast routing. Should not be needed, usually.
-# TODO: This throws an "Operation not permitted" error. Why?
-# for i in /proc/sys/net/ipv4/conf/*/mc_forwarding; do echo 0 > $i; done
-
-# Disable proxy_arp. Should not be needed, usually.
 for i in /proc/sys/net/ipv4/conf/*/proxy_arp; do echo 0 > $i; done
-
-# Enable secure redirects, i.e. only accept ICMP redirects for gateways
-# listed in the default gateway list. Helps against MITM attacks.
 for i in /proc/sys/net/ipv4/conf/*/secure_redirects; do echo 1 > $i; done
-
-# Disable bootp_relay. Should not be needed, usually.
 for i in /proc/sys/net/ipv4/conf/*/bootp_relay; do echo 0 > $i; done
-
-# TODO: These may mitigate ARP poisoning attacks?
-# /proc/sys/net/ipv4/neigh/*/locktime
-# /proc/sys/net/ipv4/neigh/*/gc_stale_time
-
-# TODO: Check rest of /usr/src/linux/Documentation/networking/ip-sysctl.txt.
-# Are there any security-relevant options I missed? Check especially:
-# icmp_ratelimit, icmp_ratemask, icmp_errors_use_inbound_ifaddr, arp_*.
-
 
 #------------------------------------------------------------------------------
 # Default policies.
 #------------------------------------------------------------------------------
 
-# Drop everything by default.
-# Note: The default policies are set _before_ flushing the chains, to prevent
-# a short timespan between flushing the chains and setting policies where
-# any traffic would be allowed.
 $IPTABLES -P INPUT DROP
 $IPTABLES -P FORWARD DROP
 $IPTABLES -P OUTPUT DROP
 
-# Set the nat/mangle/raw tables' chains to ACCEPT (we don't use them).
-# Packets will simply pass through these tables unchanged.
-# TODO: What happens if the modules aren't loaded?
 $IPTABLES -t nat -P PREROUTING ACCEPT
 $IPTABLES -t nat -P OUTPUT ACCEPT
 $IPTABLES -t nat -P POSTROUTING ACCEPT
@@ -146,11 +57,6 @@ $IPTABLES -t mangle -P INPUT ACCEPT
 $IPTABLES -t mangle -P FORWARD ACCEPT
 $IPTABLES -t mangle -P OUTPUT ACCEPT
 $IPTABLES -t mangle -P POSTROUTING ACCEPT
-
-# TODO: Correct? Remove this?
-# $IPTABLES -t raw -P PREROUTING ACCEPT
-# $IPTABLES -t raw -P OUTPUT ACCEPT
-
 
 #------------------------------------------------------------------------------
 # Cleanup.
@@ -171,17 +77,6 @@ $IPTABLES -Z
 $IPTABLES -t nat -Z
 $IPTABLES -t mangle -Z
 
-
-#------------------------------------------------------------------------------
-# Completely disable IPv6.
-#------------------------------------------------------------------------------
-
-# Block all IPv6 traffic, otherwise the firewall might be circumvented by an
-# attacker who simply sends IPv6 traffic instead of IPv4 traffic.
-# Note: The safest way to prevent IPv6 traffic is to not enable support for
-# IPv6 in the kernel in the first place (neither built-in nor as a module).
-
-# If the ip6tables command is available, try to block all IPv6 traffic.
 if test -x $IP6TABLES; then
   # Set the default policies (drop everything).
   $IP6TABLES -P INPUT DROP 2>/dev/null
@@ -229,46 +124,18 @@ $IPTABLES -A REJECTLOG -j $LOG $RLIMIT --log-prefix "REJECT "
 $IPTABLES -A REJECTLOG -p tcp -j REJECT --reject-with tcp-reset
 $IPTABLES -A REJECTLOG -j REJECT
 
-# A custom chain which only allows minimal (RELATED) ICMP types
-# (destination-unreachable, time-exceeded, and parameter-problem).
-# TODO: Rate-limit this traffic?
-# TODO: Allow fragmentation-needed?
-# TODO: Test.
 $IPTABLES -N RELATED_ICMP 
 $IPTABLES -A RELATED_ICMP -p icmp --icmp-type destination-unreachable -j ACCEPT
 $IPTABLES -A RELATED_ICMP -p icmp --icmp-type time-exceeded -j ACCEPT
 $IPTABLES -A RELATED_ICMP -p icmp --icmp-type parameter-problem -j ACCEPT
 $IPTABLES -A RELATED_ICMP -j DROPLOG
 
-
-#------------------------------------------------------------------------------
-# Only allow the minimally required/recommended parts of ICMP. Block the rest.
-# For details see:
-#   * http://tools.ietf.org/html/792
-#   * http://tools.ietf.org/html/1122
-#   * http://www.iana.org/assignments/icmp-parameters
-#   * http://www.daemon.be/maarten/icmpfilter.html
-#------------------------------------------------------------------------------
-
-# Note: Be careful if you're using kernels older than 2.4.29. Some locally
-# generated ICMP error types (going through OUTPUT) are erroneously tagged
-# as INVALID (instead of RELATED).
-# Details: http://lists.debian.org/debian-firewall/2006/05/msg00051.html.
-
-# TODO: This section needs a lot of testing!
-
-# First, drop all fragmented ICMP packets (almost always malicious).
 $IPTABLES -A INPUT -p icmp --fragment -j DROPLOG
 $IPTABLES -A OUTPUT -p icmp --fragment -j DROPLOG
 $IPTABLES -A FORWARD -p icmp --fragment -j DROPLOG
 
-# Allow all ESTABLISHED ICMP traffic.
-# TODO: Tighten this some more?
 $IPTABLES -A INPUT -p icmp -m state --state ESTABLISHED -j ACCEPT $RLIMIT
 $IPTABLES -A OUTPUT -p icmp -m state --state ESTABLISHED -j ACCEPT $RLIMIT
-
-# Allow some parts of the RELATED ICMP traffic, block the rest.
-# TODO: FORWARD?
 $IPTABLES -A INPUT -p icmp -m state --state RELATED -j RELATED_ICMP $RLIMIT
 $IPTABLES -A OUTPUT -p icmp -m state --state RELATED -j RELATED_ICMP $RLIMIT
 
@@ -408,77 +275,18 @@ $IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 80 -j ACCEPT
 # Allow outgoing HTTPS requests.
 $IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 443 -j ACCEPT
 
-# Allow outgoing SMTPS requests. Do NOT allow unencrypted SMTP!
-# $IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 465 -j ACCEPT
-
-# Allow outgoing "submission" requests.
-# Submission (RFC 2476) is used for sending email, and uses port 587.
-# This can be encrypted or unencrypted, depending on the server (I think).
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 587 -j ACCEPT
-
-# Allow outgoing POP3S requests. Do NOT allow unencrypted POP3!
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 995 -j ACCEPT
-
-# Allow outgoing SSH requests.
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 22 -j ACCEPT
-
-# Allow outgoing FTP requests. Unencrypted, use with care.
-# Note: This usually needs the ip_conntrack_ftp kernel module.
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 21 -j ACCEPT
-
-# Allow outgoing NNTP requests. Unencrypted, use with care.
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 119 -j ACCEPT
-
 # Allow outgoing NTP requests. Unencrypted, use with care.
 $IPTABLES -A OUTPUT -m state --state NEW -p udp --dport 123 -j ACCEPT
 
-# Allow outgoing IRC requests. Unencrypted, use with care.
-# Note: This usually needs the ip_conntrack_irc kernel module.
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 6667 -j ACCEPT
-
-# Allow outgoing requests to various proxies. Unencrypted, use with care.
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 8080 -j ACCEPT
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 8090 -j ACCEPT
-
-# Allow outgoing DHCP requests. Unencrypted, use with care.
-# TODO: This is completely untested, I have no idea whether it works!
-# TODO: I think this can be tightened a bit more.
 $IPTABLES -A OUTPUT -m state --state NEW -p udp \
           --sport 67:68 --dport 67:68 -j ACCEPT
 
-# Allow outgoing CVS requests. Unencrypted, use with care.
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 2401 -j ACCEPT
-
-# Allow outgoing SVN requests. Unencrypted, use with care.
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 3690 -j ACCEPT
-
-# Allow outgoing Tor (http://tor.eff.org) requests.
-# Note: Do _not_ use unencrypted protocols over Tor (sniffing is possible)!
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 9001 -j ACCEPT
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 9002 -j ACCEPT
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 9030 -j ACCEPT
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 9031 -j ACCEPT
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 9090 -j ACCEPT
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 9091 -j ACCEPT
-
-# Allow outgoing Bacula (http://www.bacula.org) requests.
-# Unencrypted (usually), use with care.
-# Ports: Console -> DIR:9101, DIR -> SD:9103, DIR -> FD:9102, FD -> SD:9103
-$IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 9101 -j ACCEPT
-# $IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 9103 -j ACCEPT
-# $IPTABLES -A OUTPUT -m state --state NEW -p tcp --dport 9102:9103 -j ACCEPT
-
 # Allow outgoing OpenVPN requests.
-$IPTABLES -A OUTPUT -m state --state NEW -p udp --dport 1194 -j ACCEPT
+# $IPTABLES -A OUTPUT -m state --state NEW -p udp --dport 1194 -j ACCEPT
 
-# TODO: ICQ, ...
-
-
-#------------------------------------------------------------------------------
-# Selectively allow certain inbound connections, block the rest.
-# TODO: This could be tightened a bit more (limit source/dest port ranges).
-#------------------------------------------------------------------------------
-
+##########################################################
+### allow certain inbound connections
+##########################################################
 # Allow incoming DNS requests.
 # $IPTABLES -A INPUT -m state --state NEW -p udp --dport 53 -j ACCEPT
 # $IPTABLES -A INPUT -m state --state NEW -p tcp --dport 53 -j ACCEPT
@@ -521,27 +329,12 @@ $IPTABLES -A OUTPUT -m state --state NEW -p udp --dport 1194 -j ACCEPT
 # $IPTABLES -A INPUT -m state --state NEW -p tcp --dport 9102 -j ACCEPT
 # $IPTABLES -A INPUT -m state --state NEW -p tcp --dport 9101:9103 -j ACCEPT
 
+##########################################################
+### log and reject everything
+##########################################################
 
-#------------------------------------------------------------------------------
-# Explicitly log and reject everything else.
-#------------------------------------------------------------------------------
-
-# Use REJECT instead of REJECTLOG if you don't need/want logging.
 $IPTABLES -A INPUT -j REJECTLOG
 $IPTABLES -A OUTPUT -j REJECTLOG
 $IPTABLES -A FORWARD -j REJECTLOG
-
-
-#------------------------------------------------------------------------------
-# Testing the firewall.
-#------------------------------------------------------------------------------
-
-# You should check/test that the firewall really works, using for example
-# iptables -vnL, nmap, ping, telnet, ...
-
-
-#------------------------------------------------------------------------------
-# Exit gracefully.
-#------------------------------------------------------------------------------
 
 exit 0
